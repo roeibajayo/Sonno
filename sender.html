@@ -1,0 +1,680 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>PhoneSpeaker — Sender</title>
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@700;800&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      :root {
+        --bg: #0a0a0f;
+        --surface: #13131a;
+        --border: #2a2a3d;
+        --accent: #00f5a0;
+        --accent2: #00b8ff;
+        --danger: #ff3c6e;
+        --text: #e8e8f0;
+        --muted: #6b6b8a;
+        --glow: 0 0 30px rgba(0, 245, 160, 0.25);
+      }
+
+      body {
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Space Mono", monospace;
+        min-height: 100vh;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem;
+        overflow: hidden;
+      }
+
+      /* animated grid bg */
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background-image:
+          linear-gradient(rgba(0, 245, 160, 0.03) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(0, 245, 160, 0.03) 1px, transparent 1px);
+        background-size: 40px 40px;
+        pointer-events: none;
+        z-index: 0;
+      }
+
+      body::after {
+        content: "";
+        position: fixed;
+        top: -50%;
+        left: -50%;
+        width: 200%;
+        height: 200%;
+        background:
+          radial-gradient(
+            ellipse at 60% 40%,
+            rgba(0, 184, 255, 0.06) 0%,
+            transparent 60%
+          ),
+          radial-gradient(
+            ellipse at 30% 70%,
+            rgba(0, 245, 160, 0.06) 0%,
+            transparent 50%
+          );
+        pointer-events: none;
+        z-index: 0;
+        animation: drift 20s ease-in-out infinite alternate;
+      }
+
+      @keyframes drift {
+        from {
+          transform: translate(0, 0) rotate(0deg);
+        }
+        to {
+          transform: translate(2%, 2%) rotate(2deg);
+        }
+      }
+
+      .container {
+        position: relative;
+        z-index: 1;
+        width: 100%;
+        max-width: 520px;
+      }
+
+      header {
+        text-align: center;
+        margin-bottom: 2.5rem;
+      }
+
+      .logo {
+        font-family: "Syne", sans-serif;
+        font-size: 2.2rem;
+        font-weight: 800;
+        letter-spacing: -1px;
+        background: linear-gradient(90deg, var(--accent), var(--accent2));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      .tagline {
+        color: var(--muted);
+        font-size: 0.75rem;
+        letter-spacing: 3px;
+        text-transform: uppercase;
+        margin-top: 0.4rem;
+      }
+
+      .badge {
+        display: inline-block;
+        background: rgba(0, 245, 160, 0.1);
+        border: 1px solid rgba(0, 245, 160, 0.3);
+        color: var(--accent);
+        font-size: 0.65rem;
+        letter-spacing: 2px;
+        padding: 0.2rem 0.7rem;
+        border-radius: 2px;
+        margin-top: 0.8rem;
+        text-transform: uppercase;
+      }
+
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 2rem;
+        margin-bottom: 1rem;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .card::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 1px;
+        background: linear-gradient(
+          90deg,
+          transparent,
+          var(--accent),
+          transparent
+        );
+        opacity: 0.5;
+      }
+
+      .card-label {
+        font-size: 0.65rem;
+        letter-spacing: 3px;
+        text-transform: uppercase;
+        color: var(--muted);
+        margin-bottom: 1.2rem;
+      }
+
+      /* Source selector */
+      .source-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 0.75rem;
+        margin-bottom: 1.5rem;
+      }
+
+      .source-btn {
+        background: transparent;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        font-family: "Space Mono", monospace;
+        font-size: 0.75rem;
+        padding: 0.8rem;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: all 0.2s;
+        text-align: center;
+        letter-spacing: 1px;
+      }
+
+      .source-btn:hover {
+        border-color: var(--accent);
+        color: var(--accent);
+      }
+      .source-btn.active {
+        border-color: var(--accent);
+        background: rgba(0, 245, 160, 0.08);
+        color: var(--accent);
+        box-shadow: var(--glow);
+      }
+
+      .source-btn .icon {
+        font-size: 1.4rem;
+        display: block;
+        margin-bottom: 0.3rem;
+      }
+
+      /* Main action button */
+      .btn-primary {
+        width: 100%;
+        padding: 1rem;
+        border: none;
+        border-radius: 6px;
+        background: linear-gradient(135deg, var(--accent), var(--accent2));
+        color: #000;
+        font-family: "Syne", sans-serif;
+        font-size: 1rem;
+        font-weight: 700;
+        letter-spacing: 1px;
+        cursor: pointer;
+        transition: all 0.2s;
+        position: relative;
+        overflow: hidden;
+      }
+
+      .btn-primary::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: rgba(255, 255, 255, 0);
+        transition: background 0.2s;
+      }
+
+      .btn-primary:hover::after {
+        background: rgba(255, 255, 255, 0.1);
+      }
+      .btn-primary:disabled {
+        opacity: 0.4;
+        cursor: not-allowed;
+      }
+
+      .btn-danger {
+        width: 100%;
+        padding: 0.9rem;
+        border: 1px solid var(--danger);
+        border-radius: 6px;
+        background: transparent;
+        color: var(--danger);
+        font-family: "Space Mono", monospace;
+        font-size: 0.8rem;
+        letter-spacing: 1px;
+        cursor: pointer;
+        transition: all 0.2s;
+      }
+      .btn-danger:hover {
+        background: rgba(255, 60, 110, 0.1);
+      }
+
+      /* Room code display */
+      .room-display {
+        text-align: center;
+        padding: 1.5rem;
+      }
+
+      .room-code {
+        font-family: "Syne", sans-serif;
+        font-size: 3rem;
+        font-weight: 800;
+        letter-spacing: 8px;
+        background: linear-gradient(90deg, var(--accent), var(--accent2));
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+      }
+
+      .room-hint {
+        color: var(--muted);
+        font-size: 0.7rem;
+        letter-spacing: 2px;
+        text-transform: uppercase;
+        margin-top: 0.5rem;
+      }
+
+      #qrcode {
+        margin: 1.2rem auto 0;
+        width: fit-content;
+        padding: 0.8rem;
+        background: white;
+        border-radius: 6px;
+        display: none;
+      }
+
+      #qrcode img,
+      #qrcode canvas {
+        display: block;
+      }
+
+      /* Visualiser */
+      .viz-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 3px;
+        height: 40px;
+        margin: 1rem 0 0.5rem;
+      }
+
+      .viz-bar {
+        width: 3px;
+        border-radius: 2px;
+        background: linear-gradient(to top, var(--accent2), var(--accent));
+        transition: height 0.05s;
+        min-height: 3px;
+      }
+
+      /* Receivers list */
+      .receivers-list {
+        display: flex;
+        flex-direction: column;
+        gap: 0.5rem;
+        max-height: 150px;
+        overflow-y: auto;
+      }
+
+      .receiver-item {
+        display: flex;
+        align-items: center;
+        gap: 0.6rem;
+        padding: 0.5rem 0.7rem;
+        background: rgba(0, 245, 160, 0.05);
+        border: 1px solid rgba(0, 245, 160, 0.15);
+        border-radius: 4px;
+        font-size: 0.7rem;
+        color: var(--accent);
+        animation: slideIn 0.3s ease;
+      }
+
+      @keyframes slideIn {
+        from {
+          opacity: 0;
+          transform: translateX(-10px);
+        }
+        to {
+          opacity: 1;
+          transform: translateX(0);
+        }
+      }
+
+      .dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+        animation: pulse 1.5s ease-in-out infinite;
+      }
+
+      @keyframes pulse {
+        0%,
+        100% {
+          opacity: 1;
+        }
+        50% {
+          opacity: 0.3;
+        }
+      }
+
+      .status-line {
+        font-size: 0.7rem;
+        color: var(--muted);
+        text-align: center;
+        letter-spacing: 1px;
+        min-height: 1.2em;
+      }
+
+      .status-line.ok {
+        color: var(--accent);
+      }
+      .status-line.err {
+        color: var(--danger);
+      }
+
+      /* Sections visibility */
+      #setup-section {
+        display: block;
+      }
+      #active-section {
+        display: none;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <div class="logo">PhoneSpeaker</div>
+        <div class="tagline">Laptop → Mobile Audio</div>
+        <div class="badge">⬛ Sender</div>
+      </header>
+
+      <!-- SETUP -->
+      <div id="setup-section">
+        <div class="card">
+          <div class="card-label">01 — Audio Source</div>
+          <div class="source-grid">
+            <button
+              class="source-btn active"
+              id="btn-system"
+              onclick="selectSource('system')"
+            >
+              <span class="icon">🖥️</span>System Audio
+            </button>
+            <button
+              class="source-btn"
+              id="btn-mic"
+              onclick="selectSource('mic')"
+            >
+              <span class="icon">🎙️</span>Microphone
+            </button>
+          </div>
+          <p class="status-line" id="source-hint">
+            System audio captures everything playing on your laptop.
+          </p>
+        </div>
+
+        <div class="card">
+          <div class="card-label">02 — Start Streaming</div>
+          <button class="btn-primary" id="start-btn" onclick="startSession()">
+            Create Room &amp; Go Live
+          </button>
+        </div>
+      </div>
+
+      <!-- ACTIVE -->
+      <div id="active-section">
+        <div class="card">
+          <div class="card-label">Room Code — Share with your phone</div>
+          <div class="room-display">
+            <div class="room-code" id="room-code-display">------</div>
+            <div class="room-hint">
+              Open receiver.html on your phone and enter this code
+            </div>
+            <div id="qrcode"></div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-label">Audio Level</div>
+          <div class="viz-row" id="viz"></div>
+          <p class="status-line ok" id="stream-status">Streaming...</p>
+        </div>
+
+        <div class="card">
+          <div class="card-label">
+            Connected Devices (<span id="rx-count">0</span>)
+          </div>
+          <div class="receivers-list" id="receivers-list">
+            <p class="status-line">Waiting for phones to connect...</p>
+          </div>
+        </div>
+
+        <button class="btn-danger" onclick="stopSession()">
+          ⏹ Stop &amp; Disconnect All
+        </button>
+      </div>
+    </div>
+
+    <script>
+      let ws,
+        peerConnections = {},
+        localStream,
+        audioCtx,
+        analyser,
+        animId;
+      let selectedSource = "system";
+      let roomId = null;
+      let receiverCount = 0;
+
+      const WS_URL = `ws://${location.host}`;
+      const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+
+      function selectSource(src) {
+        selectedSource = src;
+        document
+          .getElementById("btn-system")
+          .classList.toggle("active", src === "system");
+        document
+          .getElementById("btn-mic")
+          .classList.toggle("active", src === "mic");
+        document.getElementById("source-hint").textContent =
+          src === "system"
+            ? "System audio captures everything playing on your laptop."
+            : "Microphone captures your laptop mic input.";
+      }
+
+      async function startSession() {
+        document.getElementById("start-btn").disabled = true;
+        document.getElementById("start-btn").textContent =
+          "Requesting audio...";
+
+        try {
+          if (selectedSource === "system") {
+            const display = await navigator.mediaDevices.getDisplayMedia({
+              video: true,
+              audio: {
+                echoCancellation: false,
+                noiseSuppression: false,
+                sampleRate: 44100,
+              },
+            });
+            // Keep only audio tracks
+            display.getVideoTracks().forEach((t) => t.stop());
+            localStream = new MediaStream(display.getAudioTracks());
+            if (localStream.getAudioTracks().length === 0) {
+              alert(
+                'No audio track found. Make sure to check "Share audio" in the screen picker.',
+              );
+              document.getElementById("start-btn").disabled = false;
+              document.getElementById("start-btn").textContent =
+                "Create Room & Go Live";
+              return;
+            }
+          } else {
+            localStream = await navigator.mediaDevices.getUserMedia({
+              audio: true,
+              video: false,
+            });
+          }
+        } catch (e) {
+          alert("Could not get audio: " + e.message);
+          document.getElementById("start-btn").disabled = false;
+          document.getElementById("start-btn").textContent =
+            "Create Room & Go Live";
+          return;
+        }
+
+        setupVisualiser(localStream);
+        connectWS();
+      }
+
+      function connectWS() {
+        ws = new WebSocket(WS_URL);
+
+        ws.onopen = () => {
+          ws.send(JSON.stringify({ type: "create-room" }));
+        };
+
+        ws.onmessage = async ({ data }) => {
+          const msg = JSON.parse(data);
+
+          if (msg.type === "room-created") {
+            roomId = msg.roomId;
+            showActiveSection(roomId);
+          }
+
+          if (msg.type === "receiver-joined") {
+            const receiverId = msg.receiverId;
+            addReceiverUI(receiverId);
+            await makeOffer(receiverId);
+          }
+
+          if (msg.type === "answer") {
+            const pc = peerConnections[msg.receiverId];
+            if (pc)
+              await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
+          }
+
+          if (msg.type === "ice-candidate") {
+            const pc = peerConnections[msg.receiverId];
+            if (pc && msg.candidate) {
+              try {
+                await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
+              } catch {}
+            }
+          }
+        };
+
+        ws.onclose = () => {
+          document.getElementById("stream-status").textContent =
+            "Disconnected from server.";
+          document.getElementById("stream-status").className =
+            "status-line err";
+        };
+      }
+
+      async function makeOffer(receiverId) {
+        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        peerConnections[receiverId] = pc;
+
+        localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+
+        pc.onicecandidate = ({ candidate }) => {
+          if (candidate) {
+            ws.send(
+              JSON.stringify({
+                type: "ice-candidate",
+                candidate,
+                targetId: receiverId,
+              }),
+            );
+          }
+        };
+
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+        ws.send(
+          JSON.stringify({
+            type: "offer",
+            sdp: pc.localDescription,
+            targetId: receiverId,
+          }),
+        );
+      }
+
+      function showActiveSection(code) {
+        document.getElementById("setup-section").style.display = "none";
+        document.getElementById("active-section").style.display = "block";
+        document.getElementById("room-code-display").textContent = code;
+        generateQR(code);
+      }
+
+      function generateQR(code) {
+        const receiverUrl = `${location.origin}/receiver.html?room=${code}`;
+        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(receiverUrl)}`;
+        const qrDiv = document.getElementById("qrcode");
+        qrDiv.innerHTML = `<img src="${qrUrl}" width="140" height="140" alt="QR Code">`;
+        qrDiv.style.display = "block";
+      }
+
+      function addReceiverUI(receiverId) {
+        const list = document.getElementById("receivers-list");
+        if (list.querySelector(".status-line")) list.innerHTML = "";
+        receiverCount++;
+        document.getElementById("rx-count").textContent = receiverCount;
+        const el = document.createElement("div");
+        el.className = "receiver-item";
+        el.id = "rx-" + receiverId;
+        el.innerHTML = `<div class="dot"></div> Device ${receiverCount} connected`;
+        list.appendChild(el);
+      }
+
+      function setupVisualiser(stream) {
+        audioCtx = new AudioContext();
+        analyser = audioCtx.createAnalyser();
+        analyser.fftSize = 64;
+        const src = audioCtx.createMediaStreamSource(stream);
+        src.connect(analyser);
+
+        const viz = document.getElementById("viz");
+        viz.innerHTML = "";
+        const bars = Array.from({ length: 20 }, () => {
+          const b = document.createElement("div");
+          b.className = "viz-bar";
+          b.style.height = "3px";
+          viz.appendChild(b);
+          return b;
+        });
+
+        const data = new Uint8Array(analyser.frequencyBinCount);
+        function draw() {
+          animId = requestAnimationFrame(draw);
+          analyser.getByteFrequencyData(data);
+          bars.forEach((b, i) => {
+            const v = (data[i] || 0) / 255;
+            b.style.height = 3 + v * 37 + "px";
+            b.style.opacity = 0.4 + v * 0.6;
+          });
+        }
+        draw();
+      }
+
+      function stopSession() {
+        if (animId) cancelAnimationFrame(animId);
+        if (audioCtx) audioCtx.close();
+        if (localStream) localStream.getTracks().forEach((t) => t.stop());
+        Object.values(peerConnections).forEach((pc) => pc.close());
+        peerConnections = {};
+        if (ws) ws.close();
+        location.reload();
+      }
+    </script>
+  </body>
+</html>

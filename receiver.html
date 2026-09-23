@@ -4,6 +4,13 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
 <title>PhoneSpeaker — Receiver</title>
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0a0a0f">
+<link rel="icon" href="/icons/icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="/icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="PhoneSpeaker">
 <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@700;800&display=swap" rel="stylesheet">
 <style>
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -539,7 +546,11 @@ document.addEventListener('click', () => {
 function setupMediaSession() {
   if (!('mediaSession' in navigator)) return;
   try {
-    navigator.mediaSession.metadata = new MediaMetadata({ title: 'Laptop audio', artist: 'PhoneSpeaker' });
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: 'Laptop audio',
+      artist: 'PhoneSpeaker',
+      artwork: [{ src: '/icons/icon-512.png', sizes: '512x512', type: 'image/png' }],
+    });
   } catch {}
   const handlers = { play: resume, pause };
   Object.entries(handlers).forEach(([action, handler]) => {
@@ -734,6 +745,9 @@ function disconnect() {
   signal?.close();
   location.reload();
 }
+
+// Installable app; service workers only register over HTTPS or on localhost
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
 </script>
 </body>
 </html>

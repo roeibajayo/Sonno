@@ -1,19 +1,39 @@
 const http = require("http");
+const https = require("https");
+const os = require("os");
 const fs = require("fs");
 const path = require("path");
 const { WebSocketServer } = require("ws");
 
 const PORT = 3000;
 const HEARTBEAT_MS = 10000;
+const CERT_DIR = path.join(__dirname, "certs");
+
+// HTTPS when a certificate is present (needed for PWA install and service workers on phones)
+function loadTls() {
+  try {
+    return {
+      cert: fs.readFileSync(path.join(CERT_DIR, "cert.pem")),
+      key: fs.readFileSync(path.join(CERT_DIR, "key.pem")),
+    };
+  } catch {
+    return null;
+  }
+}
+const tls = loadTls();
+const protocol = tls ? "https" : "http";
 
 const mimeTypes = {
   ".html": "text/html",
   ".js": "application/javascript",
   ".css": "text/css",
+  ".webmanifest": "application/manifest+json",
+  ".svg": "image/svg+xml",
+  ".png": "image/png",
 };
 
 // Simple static file server
-const server = http.createServer((req, res) => {
+function serveStatic(req, res) {
   let urlPath;
   try {
     urlPath = decodeURIComponent(new URL(req.url, "http://localhost").pathname);
@@ -21,7 +41,8 @@ const server = http.createServer((req, res) => {
     urlPath = "";
   }
   const filePath = path.join(__dirname, urlPath === "/" ? "sender.html" : urlPath);
-  if (!filePath.startsWith(__dirname + path.sep)) {
+  // Only known asset types, so certs/key.pem and other private files are never served
+  if (!filePath.startsWith(__dirname + path.sep) || !mimeTypes[path.extname(filePath)]) {
     res.writeHead(404);
     res.end("Not found");
     return;
@@ -35,12 +56,14 @@ const server = http.createServer((req, res) => {
     }
     // no-cache: phones otherwise keep running an old receiver after an update
     res.writeHead(200, {
-      "Content-Type": mimeTypes[path.extname(filePath)] || "text/plain",
+      "Content-Type": mimeTypes[path.extname(filePath)],
       "Cache-Control": "no-cache",
     });
     res.end(data);
   });
-});
+}
+
+const server = tls ? https.createServer(tls, serveStatic) : http.createServer(serveStatic);
 
 const wss = new WebSocketServer({ server });
 
@@ -208,8 +231,20 @@ setInterval(() => {
   });
 }, HEARTBEAT_MS);
 
+// LAN addresses a phone can reach, skipping virtual adapters (WSL, Hyper-V, VMs, Docker)
+function lanAddresses() {
+  return Object.entries(os.networkInterfaces())
+    .filter(([name]) => !/^(vEthernet|VirtualBox|VMware|docker|br-|veth)/i.test(name))
+    .flatMap(([, addrs]) => addrs)
+    .filter((a) => a.family === "IPv4" && !a.internal)
+    .map((a) => a.address);
+}
+
 server.listen(PORT, () => {
-  console.log(`\n🔊 PhoneSpeaker server running at http://localhost:${PORT}`);
-  console.log(`   Sender:   http://localhost:${PORT}/sender.html`);
-  console.log(`   Receiver: http://localhost:${PORT}/receiver.html\n`);
+  console.log(`\n🔊 PhoneSpeaker server running at ${protocol}://localhost:${PORT}`);
+  console.log(`   Sender:   ${protocol}://localhost:${PORT}/sender.html`);
+  lanAddresses().forEach((ip) =>
+    console.log(`   Phone:    ${protocol}://${ip}:${PORT}/receiver.html`),
+  );
+  console.log();
 });

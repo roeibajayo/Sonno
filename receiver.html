@@ -274,6 +274,48 @@
   .status.ok  { color: var(--accent); }
   .status.err { color: var(--danger); }
 
+  .hint {
+    font-size: 0.6rem;
+    letter-spacing: 1px;
+    text-align: center;
+    color: var(--muted);
+    margin-top: 0.6rem;
+  }
+
+  .stats {
+    font-size: 0.55rem;
+    letter-spacing: 0.5px;
+    text-align: center;
+    color: var(--muted);
+    opacity: 0.7;
+    margin-top: 0.4rem;
+    min-height: 1em;
+  }
+
+  /* Buffer selector */
+  .seg {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 0.4rem;
+  }
+
+  .seg button {
+    padding: 0.55rem 0.2rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    font-family: 'Space Mono', monospace;
+    font-size: 0.65rem;
+    cursor: pointer;
+  }
+
+  .seg button.active {
+    border-color: var(--accent2);
+    color: var(--accent2);
+    background: rgba(0,184,255,0.08);
+  }
+
   /* sections */
   #join-section   { display: block; }
   #active-section { display: none; }
@@ -303,126 +345,297 @@
           <span class="speaker-icon" id="speaker-icon">🔊</span>
         </div>
         <div class="wave-row" id="wave"></div>
-        <p class="status ok" id="playing-status">Connected — waiting for sender...</p>
+        <p class="status ok" id="playing-status">Waiting for sender...</p>
+        <p class="stats" id="stats"></p>
+        <p class="hint">Keep this tab open — you can lock the screen or switch apps.</p>
       </div>
     </div>
 
     <div class="card">
       <div class="card-label">Volume</div>
-      <div class="vol-row">
+      <div class="vol-row" id="vol-row">
         <span class="vol-label">🔈</span>
         <input type="range" id="vol-slider" min="0" max="1" step="0.01" value="1" oninput="setVolume(this.value)">
         <span class="vol-label">🔊</span>
       </div>
+      <p class="hint" id="vol-hint" style="display:none">Use your phone's volume buttons.</p>
       <button class="btn-test" onclick="testSpeaker()">🔔 Test speaker</button>
+    </div>
+
+    <div class="card">
+      <div class="card-label">Buffer</div>
+      <div class="seg" id="buffer-seg">
+        <button data-mode="low" onclick="setBuffer('low')">Low delay</button>
+        <button data-mode="balanced" onclick="setBuffer('balanced')">Balanced</button>
+        <button data-mode="smooth" onclick="setBuffer('smooth')">Smooth</button>
+      </div>
+      <p class="hint">More buffer = fewer dropouts, but more delay.</p>
     </div>
 
     <button class="btn-block" onclick="disconnect()">⏹ Disconnect</button>
   </div>
 </div>
 
-<!-- Muted: playback goes through Web Audio. Chrome still needs the remote stream attached to an element. -->
-<audio id="audio-el" autoplay playsinline muted></audio>
+<!-- Plays the stream. A real, unmuted media element is what lets iOS and Android keep playing in the background. -->
+<audio id="stream-audio" playsinline></audio>
+<!-- Near-silent loop: keeps the page alive (and the lock-screen controls up) while the stream reconnects -->
+<audio id="keepalive-audio" playsinline loop></audio>
 
+<script src="/signal.js"></script>
 <script>
-let ws, pc, gainNode, audioCtx2, analyser2, animId2, streamSrc;
-const audioEl = document.getElementById('audio-el');
+let signal, pc, pcId, audioCtx, analyser, streamSrc, animId, prevStats;
+let joined = false, signalUp = false, senderLive = false;
+let userPaused = false, needsTap = false, brokenTicks = 0;
+const streamEl = document.getElementById('stream-audio');
+const keepAliveEl = document.getElementById('keepalive-audio');
 
-const WS_URL = `ws://${location.host}`;
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+// Minimum jitter buffer. Phones batch Wi-Fi packets (power save, worse with the screen off),
+// so a little headroom turns those bursts into smooth audio instead of dropouts.
+const BUFFER_MS = { low: null, balanced: 150, smooth: 400 };
+const savedBuffer = localStorage.getItem('bufferMode');
+let bufferMode = savedBuffer in BUFFER_MS ? savedBuffer : 'balanced';
+// iOS ignores element volume (hardware buttons only); it also suspends Web Audio in the background
+const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const volumeControllable = (() => { const a = new Audio(); a.volume = 0.5; return a.volume === 0.5; })();
 
-// Must run inside the Connect tap — mobile browsers only allow audio started by a user gesture
+const randomId = () => Date.now().toString(36) + Math.random().toString(36).slice(2);
+// Survives reloads of this tab, so the sender recognises the phone when it reconnects
+const clientId = sessionStorage.getItem('clientId') || randomId();
+sessionStorage.setItem('clientId', clientId);
+
+if (!volumeControllable) {
+  document.getElementById('vol-row').style.display = 'none';
+  document.getElementById('vol-hint').style.display = 'block';
+}
+renderBuffer();
+
+// Must run inside the Connect tap — mobile browsers only allow audio started by a user gesture.
+// Starting both elements here unlocks them for later programmatic play().
 function unlockAudio() {
-  if (navigator.audioSession) navigator.audioSession.type = 'playback'; // iOS: ignore the silent switch
-  audioCtx2 = new AudioContext();
-  gainNode = audioCtx2.createGain();
-  gainNode.gain.value = document.getElementById('vol-slider').value;
-  gainNode.connect(audioCtx2.destination);
-  analyser2 = audioCtx2.createAnalyser();
-  analyser2.fftSize = 32;
-  audioCtx2.resume();
+  if (navigator.audioSession) navigator.audioSession.type = 'playback'; // iOS: ignore the silent switch, keep playing when locked
+  const silence = URL.createObjectURL(silentWav(10));
+  keepAliveEl.src = silence;
+  keepAliveEl.play().catch(() => {});
+  streamEl.src = silence;
+  streamEl.play().catch(() => {});
+  audioCtx = new AudioContext();
+  audioCtx.resume();
+  setupMediaSession();
 }
 
-async function join() {
+function join() {
   unlockAudio();
   document.getElementById('join-btn').disabled = true;
   setJoinStatus('Connecting...', '');
 
-  ws = new WebSocket(WS_URL);
-
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ type: 'join' }));
-  };
-
-  ws.onmessage = async ({ data }) => {
-    const msg = JSON.parse(data);
-
-    if (msg.type === 'joined') {
-      showActiveSection();
-      setPlayingStatus(msg.live ? 'Connecting to sender...' : 'Waiting for sender...', 'ok');
-    }
-
-    if (msg.type === 'offer') {
-      await handleOffer(msg.sdp);
-    }
-
-    if (msg.type === 'ice-candidate') {
-      if (pc && msg.candidate) {
-        try { await pc.addIceCandidate(new RTCIceCandidate(msg.candidate)); } catch {}
-      }
-    }
-
-    if (msg.type === 'sender-disconnected') {
-      if (pc) { pc.close(); pc = null; }
-      setPlayingStatus('Sender disconnected — waiting for it to return...', 'err');
-      document.getElementById('speaker-icon').className = 'speaker-icon';
-    }
-  };
-
-  ws.onclose = () => {
-    if (document.getElementById('active-section').style.display !== 'none') {
-      setPlayingStatus('Connection lost.', 'err');
-    }
-  };
-  ws.onerror = () => {
-    setJoinStatus('Could not reach the server.', 'err');
-    document.getElementById('join-btn').disabled = false;
-  };
+  signal = connectSignal({
+    onOpen: () => signal.send({ type: 'join', clientId, pcId: livePcId() }),
+    onMessage: handleMessage,
+    onDown: () => {
+      signalUp = false;
+      if (joined) render();
+      else setJoinStatus('Could not reach the server — retrying...', 'err');
+    },
+  });
+  setInterval(watchdog, 5000);
+  setInterval(pollStats, 2000);
 }
 
-async function handleOffer(sdp) {
-  // Sender restarted — replace the old connection
-  if (pc) pc.close();
-  pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+// Only claim a connection the sender can keep; otherwise ask for a fresh one
+const livePcId = () => (pc?.connectionState === 'connected' ? pcId : null);
 
-  pc.ontrack = ({ streams }) => {
-    audioEl.srcObject = streams[0];
-    audioEl.play().catch(() => {});
-    setPlayingStatus('Connecting audio...', 'ok');
-    playStream(streams[0]);
+async function handleMessage(msg) {
+  switch (msg.type) {
+    case 'joined':
+      joined = signalUp = true;
+      senderLive = msg.live;
+      showActiveSection();
+      break;
+    case 'offer':
+      await handleOffer(msg);
+      break;
+    case 'ice-candidate':
+      if (pc && msg.pcId === pcId && msg.candidate) await pc.addIceCandidate(msg.candidate).catch(() => {});
+      break;
+    case 'sender-live':
+      senderLive = true;
+      break;
+    case 'sender-disconnected':
+      // Only the sender's server link dropped — the audio connection may well be fine
+      senderLive = false;
+      break;
+    case 'sender-stopped':
+      senderLive = false;
+      closePc();
+      break;
+  }
+  render();
+}
+
+async function handleOffer({ pcId: id, sdp }) {
+  // Same id = ICE restart on the existing connection; new id = sender started over
+  if (!pc || id !== pcId) createPc(id);
+  await pc.setRemoteDescription(sdp);
+  await pc.setLocalDescription(await pc.createAnswer());
+  signal.send({ type: 'answer', pcId: id, sdp: pc.localDescription });
+}
+
+function createPc(id) {
+  closePc();
+  const conn = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+  pc = conn;
+  pcId = id;
+  prevStats = null;
+
+  conn.ontrack = ({ track, streams, receiver }) => {
+    applyBuffer(receiver);
+    attachStream(streams[0] || new MediaStream([track]));
   };
-
-  pc.onicecandidate = ({ candidate }) => {
-    if (candidate) {
-      ws.send(JSON.stringify({ type: 'ice-candidate', candidate }));
-    }
+  conn.onicecandidate = ({ candidate }) => {
+    if (candidate && conn === pc) signal.send({ type: 'ice-candidate', pcId: id, candidate });
   };
+  conn.onconnectionstatechange = render;
+}
 
-  pc.oniceconnectionstatechange = () => {
-    const state = pc.iceConnectionState;
-    if (state === 'connected' || state === 'completed') {
-      document.getElementById('speaker-icon').classList.add('playing');
-      setPlayingStatus('Connected — listening...', 'ok');
-    } else if (state === 'failed' || state === 'disconnected') {
-      document.getElementById('speaker-icon').className = 'speaker-icon';
-      setPlayingStatus('Could not reach the laptop over the network (' + state + ')', 'err');
-    }
-  };
+function closePc() {
+  if (!pc) return;
+  pc.onconnectionstatechange = null;
+  pc.close();
+  pc = pcId = null;
+}
 
-  await pc.setRemoteDescription(new RTCSessionDescription(sdp));
-  const answer = await pc.createAnswer();
-  await pc.setLocalDescription(answer);
-  ws.send(JSON.stringify({ type: 'answer', sdp: pc.localDescription }));
+// The sender normally notices a broken connection first; this covers the case where it didn't
+function watchdog() {
+  const broken = pc && ['disconnected', 'failed'].includes(pc.connectionState);
+  brokenTicks = broken && signalUp ? brokenTicks + 1 : 0;
+  if (brokenTicks >= 3) {
+    brokenTicks = 0;
+    signal.send({ type: 'join', clientId, pcId: null });
+  }
+}
+
+function attachStream(stream) {
+  streamEl.srcObject = stream;
+  playStream();
+  connectAnalyser(stream);
+}
+
+function playStream() {
+  if (userPaused || !streamEl.srcObject) return;
+  streamEl.play().then(
+    () => { needsTap = false; render(); },
+    (e) => { if (e.name === 'NotAllowedError') { needsTap = true; render(); } },
+  );
+}
+
+document.addEventListener('click', () => {
+  if (!needsTap) return;
+  keepAliveEl.play().catch(() => {});
+  playStream();
+});
+
+// Lock-screen / notification controls
+function setupMediaSession() {
+  if (!('mediaSession' in navigator)) return;
+  try {
+    navigator.mediaSession.metadata = new MediaMetadata({ title: 'Laptop audio', artist: 'PhoneSpeaker' });
+  } catch {}
+  const handlers = { play: resume, pause };
+  Object.entries(handlers).forEach(([action, handler]) => {
+    try { navigator.mediaSession.setActionHandler(action, handler); } catch {}
+  });
+}
+
+function pause() {
+  userPaused = true;
+  streamEl.pause();
+  keepAliveEl.pause();
+  render();
+}
+
+function resume() {
+  userPaused = false;
+  keepAliveEl.play().catch(() => {});
+  playStream();
+  render();
+}
+
+document.addEventListener('visibilitychange', () => {
+  if (!audioCtx) return;
+  if (document.hidden) {
+    audioCtx.suspend(); // only drives the visualiser and test beep
+    return;
+  }
+  audioCtx.resume();
+  if (!userPaused) {
+    keepAliveEl.play().catch(() => {});
+    if (streamEl.paused) playStream();
+  }
+  render();
+});
+
+function render() {
+  const state = pc?.connectionState;
+  const live = state === 'connected';
+  document.getElementById('speaker-icon').classList.toggle('playing', live && !userPaused);
+  if ('mediaSession' in navigator) navigator.mediaSession.playbackState = userPaused ? 'paused' : 'playing';
+  if (!live) document.getElementById('stats').textContent = '';
+
+  if (needsTap) return setPlayingStatus('Tap anywhere to enable sound', 'err');
+  if (userPaused) return setPlayingStatus('Paused', '');
+  if (live) return setPlayingStatus(signalUp ? 'Connected — listening...' : 'Listening — reconnecting to server...', 'ok');
+  if (state === 'disconnected' || state === 'failed') return setPlayingStatus('Connection interrupted — reconnecting...', 'err');
+  if (!signalUp) return setPlayingStatus('Reconnecting to server...', 'err');
+  if (pc || senderLive) return setPlayingStatus('Connecting to laptop...', 'ok');
+  setPlayingStatus('Waiting for sender...', '');
+}
+
+function setBuffer(mode) {
+  bufferMode = mode;
+  localStorage.setItem('bufferMode', mode);
+  renderBuffer();
+  pc?.getReceivers().forEach(applyBuffer);
+}
+
+function renderBuffer() {
+  document.querySelectorAll('#buffer-seg button').forEach((b) => b.classList.toggle('active', b.dataset.mode === bufferMode));
+}
+
+function applyBuffer(receiver) {
+  const ms = BUFFER_MS[bufferMode];
+  try {
+    if ('jitterBufferTarget' in receiver) receiver.jitterBufferTarget = ms;
+    else if ('playoutDelayHint' in receiver) receiver.playoutDelayHint = ms === null ? null : ms / 1000;
+  } catch {}
+}
+
+// Link quality readout, so a dropout can be told apart from network loss
+async function pollStats() {
+  if (document.hidden || pc?.connectionState !== 'connected') return;
+  const conn = pc;
+  const report = await conn.getStats();
+  let inbound, pairId, pair;
+  report.forEach((s) => {
+    if (s.type === 'inbound-rtp' && s.kind === 'audio') inbound = s;
+    if (s.type === 'transport' && s.selectedCandidatePairId) pairId = s.selectedCandidatePairId;
+  });
+  report.forEach((s) => {
+    if (s.type === 'candidate-pair' && (pairId ? s.id === pairId : s.nominated && s.state === 'succeeded')) pair = s;
+  });
+  if (!inbound || conn !== pc) return;
+
+  const prev = prevStats;
+  prevStats = inbound;
+  if (!prev) return;
+  const delta = (key) => (inbound[key] ?? 0) - (prev[key] ?? 0);
+  const parts = [];
+  if (pair?.currentRoundTripTime != null) parts.push(`${Math.round(pair.currentRoundTripTime * 1000)} ms ping`);
+  const received = delta('packetsReceived'), lost = delta('packetsLost');
+  if (received + lost > 0) parts.push(`${(100 * Math.max(lost, 0) / (received + lost)).toFixed(1)}% loss`);
+  if (delta('jitterBufferEmittedCount') > 0) parts.push(`${Math.round(1000 * delta('jitterBufferDelay') / delta('jitterBufferEmittedCount'))} ms buffer`);
+  if (delta('totalSamplesReceived') > 0) parts.push(`${(100 * delta('concealedSamples') / delta('totalSamplesReceived')).toFixed(1)}% dropouts`);
+  document.getElementById('stats').textContent = parts.join(' · ');
 }
 
 function showActiveSection() {
@@ -443,68 +656,82 @@ function setPlayingStatus(msg, cls) {
 }
 
 function setVolume(v) {
-  if (gainNode) gainNode.gain.value = v;
+  streamEl.volume = v;
 }
 
-// Short beep through the same output path as the stream
 function testSpeaker() {
-  audioCtx2.resume();
-  const osc = audioCtx2.createOscillator();
+  audioCtx.resume();
+  const osc = audioCtx.createOscillator();
+  const gain = audioCtx.createGain();
+  gain.gain.value = document.getElementById('vol-slider').value;
   osc.frequency.value = 880;
-  osc.connect(gainNode);
+  osc.connect(gain).connect(audioCtx.destination);
   osc.start();
-  osc.stop(audioCtx2.currentTime + 0.4);
+  osc.stop(audioCtx.currentTime + 0.4);
 }
 
-function playStream(stream) {
-  if (streamSrc) streamSrc.disconnect();
-  streamSrc = audioCtx2.createMediaStreamSource(stream);
-  streamSrc.connect(gainNode);
-  streamSrc.connect(analyser2);
-  if (audioCtx2.state !== 'running') {
-    setPlayingStatus('Tap anywhere to enable sound', 'err');
-    document.addEventListener('click', () => {
-      audioCtx2.resume();
-      setPlayingStatus('Connected — listening...', 'ok');
-    }, { once: true });
-  }
-  setupReceiverVisualiser();
-}
-
-function setupReceiverVisualiser() {
-  if (animId2) return; // already drawing from analyser2
+// Visualiser only — never connected to the speakers. Skipped on iOS, where tapping a
+// remote stream into Web Audio is the riskiest part of the pipeline and adds nothing audible.
+function connectAnalyser(stream) {
+  if (isIOS) return;
   try {
-    const waveEl = document.getElementById('wave');
-    waveEl.innerHTML = '';
-    const bars = Array.from({ length: 14 }, () => {
-      const b = document.createElement('div');
-      b.className = 'wave-bar';
-      b.style.height = '3px';
-      waveEl.appendChild(b);
-      return b;
-    });
-
-    const data = new Uint8Array(analyser2.frequencyBinCount);
-    function draw() {
-      animId2 = requestAnimationFrame(draw);
-      analyser2.getByteFrequencyData(data);
-      bars.forEach((b, i) => {
-        const v = (data[i] || 0) / 255;
-        b.style.height = (3 + v * 33) + 'px';
-        b.style.opacity = 0.3 + v * 0.7;
-      });
+    if (!analyser) {
+      analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 32;
     }
-    draw();
-  } catch (e) {
+    if (streamSrc) streamSrc.disconnect();
+    streamSrc = audioCtx.createMediaStreamSource(stream);
+    streamSrc.connect(analyser);
+    setupReceiverVisualiser();
+  } catch {
     // visualiser optional
   }
 }
 
+function setupReceiverVisualiser() {
+  if (animId) return; // already drawing from analyser
+  const waveEl = document.getElementById('wave');
+  waveEl.innerHTML = '';
+  const bars = Array.from({ length: 14 }, () => {
+    const b = document.createElement('div');
+    b.className = 'wave-bar';
+    b.style.height = '3px';
+    waveEl.appendChild(b);
+    return b;
+  });
+
+  const data = new Uint8Array(analyser.frequencyBinCount);
+  function draw() {
+    animId = requestAnimationFrame(draw);
+    analyser.getByteFrequencyData(data);
+    bars.forEach((b, i) => {
+      const v = (data[i] || 0) / 255;
+      b.style.height = (3 + v * 33) + 'px';
+      b.style.opacity = 0.3 + v * 0.7;
+    });
+  }
+  draw();
+}
+
+// 16-bit mono WAV at ±1 LSB (about -90 dB): inaudible, but not digital silence that a
+// platform might treat as "not really playing". 10 s is long enough to count as real media.
+function silentWav(seconds) {
+  const rate = 8000, samples = rate * seconds;
+  const view = new DataView(new ArrayBuffer(44 + samples * 2));
+  const text = (offset, s) => [...s].forEach((c, i) => view.setUint8(offset + i, c.charCodeAt(0)));
+  text(0, 'RIFF'); view.setUint32(4, 36 + samples * 2, true); text(8, 'WAVE');
+  text(12, 'fmt '); view.setUint32(16, 16, true); view.setUint16(20, 1, true); view.setUint16(22, 1, true);
+  view.setUint32(24, rate, true); view.setUint32(28, rate * 2, true); view.setUint16(32, 2, true); view.setUint16(34, 16, true);
+  text(36, 'data'); view.setUint32(40, samples * 2, true);
+  for (let i = 0; i < samples; i++) view.setInt16(44 + i * 2, i & 1 ? 1 : -1, true);
+  return new Blob([view], { type: 'audio/wav' });
+}
+
 function disconnect() {
-  if (animId2) cancelAnimationFrame(animId2);
-  if (audioCtx2) audioCtx2.close();
-  if (pc) pc.close();
-  if (ws) ws.close();
+  if (animId) cancelAnimationFrame(animId);
+  if (audioCtx) audioCtx.close();
+  closePc();
+  signal?.close();
   location.reload();
 }
 </script>

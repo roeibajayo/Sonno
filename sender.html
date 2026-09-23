@@ -340,6 +340,11 @@
         }
       }
 
+      .receiver-item.pending {
+        color: var(--muted);
+        border-color: var(--border);
+      }
+
       .dot {
         width: 6px;
         height: 6px;
@@ -455,18 +460,28 @@
       </div>
     </div>
 
+    <script src="/signal.js"></script>
     <script>
-      let ws,
-        peerConnections = {},
-        localStream,
-        audioCtx,
-        analyser,
-        animId;
+      let signal, localStream, audioCtx, analyser, animId;
       let selectedSource = "system";
-      let receiverCount = 0;
+      let deviceCount = 0;
+      const peers = new Map(); // receiverId -> { pc, pcId, present, restarts, createdAt, timer }
+      const deviceEls = new Map(); // receiverId -> list item
 
-      const WS_URL = `ws://${location.host}`;
       const ICE_SERVERS = [{ urls: "stun:stun.l.google.com:19302" }];
+      // Asked of the receiver's decoder: stereo music quality, with loss recovery
+      const OPUS_PARAMS = {
+        stereo: 1,
+        "sprop-stereo": 1,
+        maxaveragebitrate: 128000,
+        useinbandfec: 1,
+      };
+      const RECOVER_AFTER_MS = 2000; // let a short Wi-Fi blip heal before restarting ICE
+      const CONNECT_TIMEOUT_MS = 8000;
+      const MAX_ICE_RESTARTS = 2; // then start over with a fresh connection
+
+      const randomId = () =>
+        Date.now().toString(36) + Math.random().toString(36).slice(2);
 
       function selectSource(src) {
         selectedSource = src;
@@ -494,7 +509,7 @@
               audio: {
                 echoCancellation: false,
                 noiseSuppression: false,
-                sampleRate: 44100,
+                autoGainControl: false,
               },
             });
             // Keep only audio tracks
@@ -509,6 +524,9 @@
                 "Go Live";
               return;
             }
+            localStream
+              .getAudioTracks()
+              .forEach((t) => (t.contentHint = "music"));
           } else {
             localStream = await navigator.mediaDevices.getUserMedia({
               audio: true,
@@ -523,81 +541,240 @@
           return;
         }
 
+        // Browser's "Stop sharing" bar ends the track
+        localStream.getAudioTracks()[0].onended = () => stopSession();
         setupVisualiser(localStream);
-        connectWS();
+        signal = connectSignal({
+          onOpen: () => signal.send({ type: "start" }),
+          onMessage: handleMessage,
+          onDown: () => setStreamStatus("Reconnecting to server...", "err"),
+        });
       }
 
-      function connectWS() {
-        ws = new WebSocket(WS_URL);
-
-        ws.onopen = () => {
-          ws.send(JSON.stringify({ type: "start" }));
-        };
-
-        ws.onmessage = async ({ data }) => {
-          const msg = JSON.parse(data);
-
-          if (msg.type === "started") {
+      async function handleMessage(msg) {
+        switch (msg.type) {
+          case "started":
             showActiveSection();
+            setStreamStatus("Streaming...", "ok");
+            break;
+          case "receiver-joined":
+            await onReceiverJoined(msg);
+            break;
+          case "receiver-left":
+            onReceiverLeft(msg.receiverId);
+            break;
+          case "answer": {
+            const peer = peerFor(msg);
+            if (peer?.pc.signalingState === "have-local-offer")
+              await applyAnswer(peer.pc, msg.sdp);
+            break;
           }
-
-          if (msg.type === "receiver-joined") {
-            const receiverId = msg.receiverId;
-            addReceiverUI(receiverId);
-            await makeOffer(receiverId);
+          case "ice-candidate": {
+            const peer = peerFor(msg);
+            if (peer && msg.candidate)
+              await peer.pc.addIceCandidate(msg.candidate).catch(() => {});
+            break;
           }
-
-          if (msg.type === "answer") {
-            const pc = peerConnections[msg.receiverId];
-            if (pc)
-              await pc.setRemoteDescription(new RTCSessionDescription(msg.sdp));
-          }
-
-          if (msg.type === "ice-candidate") {
-            const pc = peerConnections[msg.receiverId];
-            if (pc && msg.candidate) {
-              try {
-                await pc.addIceCandidate(new RTCIceCandidate(msg.candidate));
-              } catch {}
-            }
-          }
-        };
-
-        ws.onclose = () => {
-          document.getElementById("stream-status").textContent =
-            "Disconnected from server.";
-          document.getElementById("stream-status").className =
-            "status-line err";
-        };
+          case "replaced":
+            teardown();
+            setStreamStatus("Another sender page took over.", "err");
+            break;
+        }
       }
 
-      async function makeOffer(receiverId) {
-        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
-        peerConnections[receiverId] = pc;
+      // Ignore signalling meant for a connection we already replaced
+      function peerFor({ receiverId, pcId }) {
+        const peer = peers.get(receiverId);
+        return peer?.pcId === pcId ? peer : null;
+      }
 
-        localStream.getTracks().forEach((t) => pc.addTrack(t, localStream));
+      async function onReceiverJoined({ receiverId, pcId }) {
+        const peer = peers.get(receiverId);
+        if (peer) {
+          peer.present = true;
+          const state = peer.pc.connectionState;
+          // Phone only lost the server link; the audio connection is fine
+          const stillPlaying = peer.pcId === pcId && state === "connected";
+          const negotiating =
+            (state === "new" || state === "connecting") &&
+            Date.now() - peer.createdAt < CONNECT_TIMEOUT_MS;
+          if (stillPlaying || negotiating) return renderDevice(peer);
+        }
+        await createPeer(receiverId);
+      }
+
+      function onReceiverLeft(receiverId) {
+        const peer = peers.get(receiverId);
+        if (!peer) return;
+        peer.present = false;
+        // Audio flows peer-to-peer, so keep it until the connection itself fails
+        if (peer.pc.connectionState === "connected") renderDevice(peer);
+        else dropPeer(peer);
+      }
+
+      async function createPeer(receiverId) {
+        closePeer(peers.get(receiverId));
+        const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+        const peer = {
+          receiverId,
+          pc,
+          pcId: randomId(),
+          present: true,
+          restarts: 0,
+          createdAt: Date.now(),
+          timer: null,
+        };
+        peers.set(receiverId, peer);
+
+        localStream.getAudioTracks().forEach((track) => {
+          const transceiver = pc.addTransceiver(track, {
+            direction: "sendonly",
+            streams: [localStream],
+          });
+          preferRed(transceiver);
+        });
 
         pc.onicecandidate = ({ candidate }) => {
-          if (candidate) {
-            ws.send(
-              JSON.stringify({
-                type: "ice-candidate",
-                candidate,
-                targetId: receiverId,
-              }),
-            );
-          }
+          if (candidate)
+            signal.send({
+              type: "ice-candidate",
+              candidate,
+              targetId: receiverId,
+              pcId: peer.pcId,
+            });
         };
+        pc.onconnectionstatechange = () => onPeerState(peer);
 
-        const offer = await pc.createOffer();
-        await pc.setLocalDescription(offer);
-        ws.send(
-          JSON.stringify({
-            type: "offer",
-            sdp: pc.localDescription,
-            targetId: receiverId,
-          }),
-        );
+        renderDevice(peer);
+        await sendOffer(peer);
+        pc.getSenders().forEach(prioritize);
+      }
+
+      async function sendOffer(peer, iceRestart = false) {
+        const { pc } = peer;
+        await pc.setLocalDescription(await pc.createOffer({ iceRestart }));
+        signal.send({
+          type: "offer",
+          sdp: pc.localDescription,
+          targetId: peer.receiverId,
+          pcId: peer.pcId,
+        });
+        armWatchdog(peer, CONNECT_TIMEOUT_MS);
+      }
+
+      function armWatchdog(peer, ms) {
+        clearTimeout(peer.timer);
+        peer.timer = setTimeout(() => signal.run(() => recover(peer)), ms);
+      }
+
+      function onPeerState(peer) {
+        if (peers.get(peer.receiverId) !== peer) return;
+        switch (peer.pc.connectionState) {
+          case "connected":
+            clearTimeout(peer.timer);
+            peer.restarts = 0;
+            break;
+          case "disconnected":
+            armWatchdog(peer, RECOVER_AFTER_MS);
+            break;
+          case "failed":
+            signal.run(() => recover(peer));
+            break;
+        }
+        renderDevice(peer);
+      }
+
+      async function recover(peer) {
+        const { pc } = peer;
+        if (
+          peers.get(peer.receiverId) !== peer ||
+          pc.connectionState === "connected"
+        )
+          return;
+        clearTimeout(peer.timer);
+        // Phone is away: wait for it to rejoin rather than offering into the void
+        if (!peer.present) {
+          if (pc.connectionState !== "disconnected") dropPeer(peer);
+          return;
+        }
+        if (!signal.isOpen) return armWatchdog(peer, CONNECT_TIMEOUT_MS);
+        if (peer.restarts < MAX_ICE_RESTARTS && pc.signalingState === "stable") {
+          // Keeps the current path playing while a new one is found
+          peer.restarts++;
+          await sendOffer(peer, true);
+        } else {
+          await createPeer(peer.receiverId);
+        }
+        renderDevice(peers.get(peer.receiverId));
+      }
+
+      function closePeer(peer) {
+        if (!peer) return;
+        clearTimeout(peer.timer);
+        peer.pc.onconnectionstatechange = null;
+        peer.pc.close();
+      }
+
+      function dropPeer(peer) {
+        closePeer(peer);
+        peers.delete(peer.receiverId);
+        deviceEls.get(peer.receiverId)?.remove();
+        deviceEls.delete(peer.receiverId);
+        renderDeviceCount();
+      }
+
+      // Redundant audio (RED) resends each packet's predecessor, hiding the short
+      // bursts of loss typical of Wi-Fi. Falls back to plain Opus if the phone lacks it.
+      function preferRed(transceiver) {
+        const codecs = RTCRtpReceiver.getCapabilities?.("audio")?.codecs;
+        if (!codecs || !transceiver.setCodecPreferences) return;
+        const isRed = (c) => c.mimeType.toLowerCase() === "audio/red";
+        if (!codecs.some(isRed)) return;
+        try {
+          transceiver.setCodecPreferences([
+            ...codecs.filter(isRed),
+            ...codecs.filter((c) => !isRed(c)),
+          ]);
+        } catch {}
+      }
+
+      // Marks packets for Wi-Fi's voice queue (DSCP/WMM) where the OS allows it
+      async function prioritize(sender) {
+        try {
+          const params = sender.getParameters();
+          if (!params.encodings?.length) return;
+          params.encodings.forEach((e) => {
+            e.priority = "high";
+            e.networkPriority = "high";
+          });
+          await sender.setParameters(params);
+        } catch {}
+      }
+
+      async function applyAnswer(pc, answer) {
+        try {
+          await pc.setRemoteDescription({
+            type: "answer",
+            sdp: tuneOpus(answer.sdp),
+          });
+        } catch {
+          await pc.setRemoteDescription(answer);
+        }
+      }
+
+      function tuneOpus(sdp) {
+        const pt = sdp.match(/a=rtpmap:(\d+) opus\/48000\/2/i)?.[1];
+        if (!pt) return sdp;
+        return sdp.replace(new RegExp(`a=fmtp:${pt} (.*)`), (_, current) => {
+          const params = new Map(
+            current.split(";").map((kv) => kv.trim().split("=")),
+          );
+          Object.entries(OPUS_PARAMS).forEach(([k, v]) => params.set(k, v));
+          return (
+            `a=fmtp:${pt} ` +
+            [...params].map(([k, v]) => `${k}=${v}`).join(";")
+          );
+        });
       }
 
       function showActiveSection() {
@@ -608,6 +785,12 @@
         generateQR(receiverUrl);
       }
 
+      function setStreamStatus(text, cls) {
+        const el = document.getElementById("stream-status");
+        el.textContent = text;
+        el.className = "status-line " + cls;
+      }
+
       function generateQR(receiverUrl) {
         const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(receiverUrl)}`;
         const qrDiv = document.getElementById("qrcode");
@@ -615,16 +798,37 @@
         qrDiv.style.display = "block";
       }
 
-      function addReceiverUI(receiverId) {
+      function renderDevice(peer) {
+        if (!peer) return;
+        let el = deviceEls.get(peer.receiverId);
+        if (!el) {
+          const list = document.getElementById("receivers-list");
+          list.querySelector(".status-line")?.remove();
+          el = document.createElement("div");
+          el.className = "receiver-item";
+          el.innerHTML = `<div class="dot"></div><span></span>`;
+          el.dataset.name = `Device ${++deviceCount}`;
+          list.appendChild(el);
+          deviceEls.set(peer.receiverId, el);
+        }
+        const state = peer.pc.connectionState;
+        const label =
+          state === "connected"
+            ? "connected"
+            : state === "disconnected" || state === "failed"
+              ? "reconnecting..."
+              : "connecting...";
+        el.classList.toggle("pending", state !== "connected");
+        el.querySelector("span").textContent = `${el.dataset.name} ${label}`;
+        renderDeviceCount();
+      }
+
+      function renderDeviceCount() {
+        document.getElementById("rx-count").textContent = peers.size;
         const list = document.getElementById("receivers-list");
-        if (list.querySelector(".status-line")) list.innerHTML = "";
-        receiverCount++;
-        document.getElementById("rx-count").textContent = receiverCount;
-        const el = document.createElement("div");
-        el.className = "receiver-item";
-        el.id = "rx-" + receiverId;
-        el.innerHTML = `<div class="dot"></div> Device ${receiverCount} connected`;
-        list.appendChild(el);
+        if (!peers.size && !list.querySelector(".status-line"))
+          list.innerHTML =
+            '<p class="status-line">Waiting for phones to connect...</p>';
       }
 
       function setupVisualiser(stream) {
@@ -657,15 +861,23 @@
         draw();
       }
 
-      function stopSession() {
+      function teardown() {
         if (animId) cancelAnimationFrame(animId);
         if (audioCtx) audioCtx.close();
         if (localStream) localStream.getTracks().forEach((t) => t.stop());
-        Object.values(peerConnections).forEach((pc) => pc.close());
-        peerConnections = {};
-        if (ws) ws.close();
+        peers.forEach(closePeer);
+        peers.clear();
+        signal?.close();
+      }
+
+      function stopSession() {
+        // Explicit stop lets phones drop the connection now instead of waiting for it to time out
+        signal?.send({ type: "stop" });
+        teardown();
         location.reload();
       }
+
+      window.addEventListener("pagehide", () => signal?.send({ type: "stop" }));
     </script>
   </body>
 </html>

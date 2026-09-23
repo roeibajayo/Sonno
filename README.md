@@ -63,14 +63,18 @@ Tap **Connect**.
    - Open the link (or scan the QR)
    - Tap **Connect** — audio starts playing immediately (phones can connect before the sender goes live and will start playing once it does)
 
-3. Use the **volume slider** on the phone to adjust playback.
+3. Use the **volume slider** on the phone to adjust playback (on iPhone, use the hardware volume buttons).
+
+4. You can **lock the phone or switch apps** — keep the receiver tab open and audio keeps playing. Lock-screen / notification controls can pause and resume it.
 
 ---
 
 ## Tips
 
 - **System audio on Chrome**: You must share a browser tab or entire screen and check "Share audio" in the dialog. Only Chrome on desktop supports tab audio capture.
-- **Latency**: Typically 50–150ms on a good local network — great for music, podcasts, calls.
+- **Latency vs. dropouts**: The receiver's **Buffer** setting trades delay for smoothness. *Balanced* (default) suits most Wi-Fi; pick *Smooth* if audio still drops with the screen off, or *Low delay* when watching video on the laptop. The small stats line under the status shows ping, packet loss, buffer and dropouts.
+- **Connection drops**: Both pages reconnect on their own. A server or Wi-Fi blip does not interrupt audio that is already flowing; a broken audio path is repaired automatically (ICE restart, then a fresh connection).
+- **Laptop on Wi-Fi (Windows)**: If audio still stutters, set *Power Options → Wireless Adapter Settings → Power Saving Mode* to **Maximum Performance**, or use Ethernet.
 - **Multiple phones**: You can connect as many phones as you want. There is one shared session — a new sender replaces the previous one.
 - **HTTPS for production**: If deploying beyond localhost, you'll need HTTPS (WebRTC requires it). Use [ngrok](https://ngrok.com) for quick testing: `ngrok http 3000`.
 

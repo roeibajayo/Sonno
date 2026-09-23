@@ -11,6 +11,13 @@ Stream audio from your laptop to any phone — in real-time, no app install need
 
 ## Setup
 
+'''bash
+git clone https://github.com/silasamoah/Sonno.git
+'''
+'''bash
+cd Sonno
+'''
+
 ### 1. Install dependencies
 
 ```bash
@@ -39,7 +46,9 @@ Find your laptop's local IP (e.g. `192.168.1.42`) and open:
 http://192.168.1.42:3000/receiver.html
 ```
 
-Or just **scan the QR code** shown on the sender page — it auto-fills the room code.
+Type **The code** shown on the sender page.
+
+![alt text](image.png)
 
 ---
 

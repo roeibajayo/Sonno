@@ -39,7 +39,7 @@
         align-items: center;
         justify-content: center;
         padding: 2rem;
-        overflow: hidden;
+        overflow-x: hidden;
       }
 
       /* animated grid bg */
@@ -255,21 +255,16 @@
         background: rgba(255, 60, 110, 0.1);
       }
 
-      /* Room code display */
+      /* Receiver link display */
       .room-display {
         text-align: center;
         padding: 1.5rem;
       }
 
-      .room-code {
-        font-family: "Syne", sans-serif;
-        font-size: 3rem;
-        font-weight: 800;
-        letter-spacing: 8px;
-        background: linear-gradient(90deg, var(--accent), var(--accent2));
-        -webkit-background-clip: text;
-        -webkit-text-fill-color: transparent;
-        background-clip: text;
+      .receiver-url {
+        font-size: 0.85rem;
+        color: var(--accent);
+        word-break: break-all;
       }
 
       .room-hint {
@@ -423,7 +418,7 @@
         <div class="card">
           <div class="card-label">02 — Start Streaming</div>
           <button class="btn-primary" id="start-btn" onclick="startSession()">
-            Create Room &amp; Go Live
+            Go Live
           </button>
         </div>
       </div>
@@ -431,12 +426,10 @@
       <!-- ACTIVE -->
       <div id="active-section">
         <div class="card">
-          <div class="card-label">Room Code — Share with your phone</div>
+          <div class="card-label">Open on your phone</div>
           <div class="room-display">
-            <div class="room-code" id="room-code-display">------</div>
-            <div class="room-hint">
-              Open receiver.html on your phone and enter this code
-            </div>
+            <div class="receiver-url" id="receiver-url"></div>
+            <div class="room-hint">Or scan the QR code</div>
             <div id="qrcode"></div>
           </div>
         </div>
@@ -470,7 +463,6 @@
         analyser,
         animId;
       let selectedSource = "system";
-      let roomId = null;
       let receiverCount = 0;
 
       const WS_URL = `ws://${location.host}`;
@@ -514,7 +506,7 @@
               );
               document.getElementById("start-btn").disabled = false;
               document.getElementById("start-btn").textContent =
-                "Create Room & Go Live";
+                "Go Live";
               return;
             }
           } else {
@@ -527,7 +519,7 @@
           alert("Could not get audio: " + e.message);
           document.getElementById("start-btn").disabled = false;
           document.getElementById("start-btn").textContent =
-            "Create Room & Go Live";
+            "Go Live";
           return;
         }
 
@@ -539,15 +531,14 @@
         ws = new WebSocket(WS_URL);
 
         ws.onopen = () => {
-          ws.send(JSON.stringify({ type: "create-room" }));
+          ws.send(JSON.stringify({ type: "start" }));
         };
 
         ws.onmessage = async ({ data }) => {
           const msg = JSON.parse(data);
 
-          if (msg.type === "room-created") {
-            roomId = msg.roomId;
-            showActiveSection(roomId);
+          if (msg.type === "started") {
+            showActiveSection();
           }
 
           if (msg.type === "receiver-joined") {
@@ -609,15 +600,15 @@
         );
       }
 
-      function showActiveSection(code) {
+      function showActiveSection() {
+        const receiverUrl = `${location.origin}/receiver.html`;
         document.getElementById("setup-section").style.display = "none";
         document.getElementById("active-section").style.display = "block";
-        document.getElementById("room-code-display").textContent = code;
-        generateQR(code);
+        document.getElementById("receiver-url").textContent = receiverUrl;
+        generateQR(receiverUrl);
       }
 
-      function generateQR(code) {
-        const receiverUrl = `${location.origin}/receiver.html?room=${code}`;
+      function generateQR(receiverUrl) {
         const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=140x140&data=${encodeURIComponent(receiverUrl)}`;
         const qrDiv = document.getElementById("qrcode");
         qrDiv.innerHTML = `<img src="${qrUrl}" width="140" height="140" alt="QR Code">`;

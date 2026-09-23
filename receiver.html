@@ -30,7 +30,7 @@
     justify-content: center;
     padding: 1.5rem;
     position: relative;
-    overflow: hidden;
+    overflow-x: hidden;
   }
 
   body::before {
@@ -122,34 +122,9 @@
     margin-bottom: 1rem;
   }
 
-  /* Code input */
-  .code-input-row {
-    display: flex;
-    gap: 0.5rem;
-  }
-
-  #room-input {
-    flex: 1;
-    background: rgba(0,184,255,0.05);
-    border: 1px solid var(--border);
-    border-radius: 6px;
-    color: var(--text);
-    font-family: 'Syne', sans-serif;
-    font-size: 1.4rem;
-    font-weight: 700;
-    letter-spacing: 4px;
-    text-align: center;
-    text-transform: uppercase;
-    padding: 0.7rem;
-    outline: none;
-    transition: border-color 0.2s;
-  }
-
-  #room-input:focus { border-color: var(--accent2); }
-  #room-input::placeholder { color: var(--muted); font-size: 1rem; letter-spacing: 2px; }
-
   .btn-primary {
-    padding: 0.7rem 1.2rem;
+    width: 100%;
+    padding: 1rem 1.2rem;
     border: none;
     border-radius: 6px;
     background: linear-gradient(135deg, var(--accent2), var(--accent));
@@ -178,6 +153,20 @@
     cursor: pointer;
     transition: background 0.2s;
   }
+  .btn-test {
+    width: 100%;
+    margin-top: 1rem;
+    padding: 0.6rem;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    background: transparent;
+    color: var(--muted);
+    font-family: 'Space Mono', monospace;
+    font-size: 0.7rem;
+    letter-spacing: 1px;
+    cursor: pointer;
+  }
+
   .btn-block:hover { background: rgba(255,60,110,0.1); }
 
   /* Speaker visual */
@@ -300,11 +289,8 @@
   <!-- JOIN -->
   <div id="join-section">
     <div class="card">
-      <div class="card-label">Enter Room Code</div>
-      <div class="code-input-row">
-        <input id="room-input" type="text" maxlength="6" placeholder="ABC123" autocomplete="off" spellcheck="false">
-        <button class="btn-primary" id="join-btn" onclick="joinRoom()">Join</button>
-      </div>
+      <div class="card-label">Laptop Audio</div>
+      <button class="btn-primary" id="join-btn" onclick="join()">Connect</button>
     </div>
     <p class="status" id="join-status"></p>
   </div>
@@ -317,7 +303,7 @@
           <span class="speaker-icon" id="speaker-icon">🔊</span>
         </div>
         <div class="wave-row" id="wave"></div>
-        <p class="status ok" id="playing-status">Connected — listening...</p>
+        <p class="status ok" id="playing-status">Connected — waiting for sender...</p>
       </div>
     </div>
 
@@ -328,55 +314,52 @@
         <input type="range" id="vol-slider" min="0" max="1" step="0.01" value="1" oninput="setVolume(this.value)">
         <span class="vol-label">🔊</span>
       </div>
+      <button class="btn-test" onclick="testSpeaker()">🔔 Test speaker</button>
     </div>
 
     <button class="btn-block" onclick="disconnect()">⏹ Disconnect</button>
   </div>
 </div>
 
-<audio id="audio-el" autoplay playsinline></audio>
+<!-- Muted: playback goes through Web Audio. Chrome still needs the remote stream attached to an element. -->
+<audio id="audio-el" autoplay playsinline muted></audio>
 
 <script>
-let ws, pc, gainNode, audioCtx2, analyser2, animId2;
+let ws, pc, gainNode, audioCtx2, analyser2, animId2, streamSrc;
 const audioEl = document.getElementById('audio-el');
-
-// Auto-fill room from URL param
-const params = new URLSearchParams(location.search);
-if (params.get('room')) {
-  document.getElementById('room-input').value = params.get('room').toUpperCase();
-}
 
 const WS_URL = `ws://${location.host}`;
 const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
 
-async function joinRoom() {
-  const roomId = document.getElementById('room-input').value.trim().toUpperCase();
-  if (roomId.length < 4) {
-    setJoinStatus('Enter a valid room code.', 'err');
-    return;
-  }
+// Must run inside the Connect tap — mobile browsers only allow audio started by a user gesture
+function unlockAudio() {
+  if (navigator.audioSession) navigator.audioSession.type = 'playback'; // iOS: ignore the silent switch
+  audioCtx2 = new AudioContext();
+  gainNode = audioCtx2.createGain();
+  gainNode.gain.value = document.getElementById('vol-slider').value;
+  gainNode.connect(audioCtx2.destination);
+  analyser2 = audioCtx2.createAnalyser();
+  analyser2.fftSize = 32;
+  audioCtx2.resume();
+}
 
+async function join() {
+  unlockAudio();
   document.getElementById('join-btn').disabled = true;
   setJoinStatus('Connecting...', '');
 
   ws = new WebSocket(WS_URL);
 
   ws.onopen = () => {
-    ws.send(JSON.stringify({ type: 'join-room', roomId }));
+    ws.send(JSON.stringify({ type: 'join' }));
   };
 
   ws.onmessage = async ({ data }) => {
     const msg = JSON.parse(data);
 
-    if (msg.type === 'error') {
-      setJoinStatus(msg.message, 'err');
-      document.getElementById('join-btn').disabled = false;
-      ws.close();
-      return;
-    }
-
-    if (msg.type === 'room-joined') {
+    if (msg.type === 'joined') {
       showActiveSection();
+      setPlayingStatus(msg.live ? 'Connecting to sender...' : 'Waiting for sender...', 'ok');
     }
 
     if (msg.type === 'offer') {
@@ -390,32 +373,49 @@ async function joinRoom() {
     }
 
     if (msg.type === 'sender-disconnected') {
-      document.getElementById('playing-status').textContent = 'Sender disconnected.';
-      document.getElementById('playing-status').className = 'status err';
+      if (pc) { pc.close(); pc = null; }
+      setPlayingStatus('Sender disconnected — waiting for it to return...', 'err');
       document.getElementById('speaker-icon').className = 'speaker-icon';
     }
   };
 
   ws.onclose = () => {
     if (document.getElementById('active-section').style.display !== 'none') {
-      document.getElementById('playing-status').textContent = 'Connection lost.';
-      document.getElementById('playing-status').className = 'status err';
+      setPlayingStatus('Connection lost.', 'err');
     }
+  };
+  ws.onerror = () => {
+    setJoinStatus('Could not reach the server.', 'err');
+    document.getElementById('join-btn').disabled = false;
   };
 }
 
 async function handleOffer(sdp) {
+  // Sender restarted — replace the old connection
+  if (pc) pc.close();
   pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
 
   pc.ontrack = ({ streams }) => {
     audioEl.srcObject = streams[0];
-    setupReceiverVisualiser(streams[0]);
-    document.getElementById('speaker-icon').classList.add('playing');
+    audioEl.play().catch(() => {});
+    setPlayingStatus('Connecting audio...', 'ok');
+    playStream(streams[0]);
   };
 
   pc.onicecandidate = ({ candidate }) => {
     if (candidate) {
       ws.send(JSON.stringify({ type: 'ice-candidate', candidate }));
+    }
+  };
+
+  pc.oniceconnectionstatechange = () => {
+    const state = pc.iceConnectionState;
+    if (state === 'connected' || state === 'completed') {
+      document.getElementById('speaker-icon').classList.add('playing');
+      setPlayingStatus('Connected — listening...', 'ok');
+    } else if (state === 'failed' || state === 'disconnected') {
+      document.getElementById('speaker-icon').className = 'speaker-icon';
+      setPlayingStatus('Could not reach the laptop over the network (' + state + ')', 'err');
     }
   };
 
@@ -436,21 +436,44 @@ function setJoinStatus(msg, cls) {
   el.className = 'status ' + cls;
 }
 
+function setPlayingStatus(msg, cls) {
+  const el = document.getElementById('playing-status');
+  el.textContent = msg;
+  el.className = 'status ' + cls;
+}
+
 function setVolume(v) {
-  audioEl.volume = v;
   if (gainNode) gainNode.gain.value = v;
 }
 
-function setupReceiverVisualiser(stream) {
-  try {
-    audioCtx2 = new AudioContext();
-    analyser2 = audioCtx2.createAnalyser();
-    analyser2.fftSize = 32;
-    const src = audioCtx2.createMediaStreamSource(stream);
-    gainNode = audioCtx2.createGain();
-    gainNode.gain.value = 1;
-    src.connect(analyser2);
+// Short beep through the same output path as the stream
+function testSpeaker() {
+  audioCtx2.resume();
+  const osc = audioCtx2.createOscillator();
+  osc.frequency.value = 880;
+  osc.connect(gainNode);
+  osc.start();
+  osc.stop(audioCtx2.currentTime + 0.4);
+}
 
+function playStream(stream) {
+  if (streamSrc) streamSrc.disconnect();
+  streamSrc = audioCtx2.createMediaStreamSource(stream);
+  streamSrc.connect(gainNode);
+  streamSrc.connect(analyser2);
+  if (audioCtx2.state !== 'running') {
+    setPlayingStatus('Tap anywhere to enable sound', 'err');
+    document.addEventListener('click', () => {
+      audioCtx2.resume();
+      setPlayingStatus('Connected — listening...', 'ok');
+    }, { once: true });
+  }
+  setupReceiverVisualiser();
+}
+
+function setupReceiverVisualiser() {
+  if (animId2) return; // already drawing from analyser2
+  try {
     const waveEl = document.getElementById('wave');
     waveEl.innerHTML = '';
     const bars = Array.from({ length: 14 }, () => {

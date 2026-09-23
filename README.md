@@ -47,7 +47,7 @@ Find your laptop's local IP (e.g. `192.168.1.42`) and open:
 http://192.168.1.42:3000/receiver.html
 ```
 
-Type **The code** shown on the sender page.
+Tap **Connect**.
 
 ---
 
@@ -55,13 +55,13 @@ Type **The code** shown on the sender page.
 
 1. On the **laptop sender page**:
    - Choose audio source: **System Audio** (everything playing) or **Microphone**
-   - Click **Create Room & Go Live**
+   - Click **Go Live**
    - For system audio: in the screen-share picker, **check "Share audio"** ✅
-   - A room code + QR code will appear
+   - The receiver link + QR code will appear
 
 2. On the **phone receiver page**:
-   - Enter the 6-character room code (or scan the QR)
-   - Tap **Join** — audio starts playing immediately
+   - Open the link (or scan the QR)
+   - Tap **Connect** — audio starts playing immediately (phones can connect before the sender goes live and will start playing once it does)
 
 3. Use the **volume slider** on the phone to adjust playback.
 
@@ -71,7 +71,7 @@ Type **The code** shown on the sender page.
 
 - **System audio on Chrome**: You must share a browser tab or entire screen and check "Share audio" in the dialog. Only Chrome on desktop supports tab audio capture.
 - **Latency**: Typically 50–150ms on a good local network — great for music, podcasts, calls.
-- **Multiple phones**: You can connect as many phones as you want to the same room.
+- **Multiple phones**: You can connect as many phones as you want. There is one shared session — a new sender replaces the previous one.
 - **HTTPS for production**: If deploying beyond localhost, you'll need HTTPS (WebRTC requires it). Use [ngrok](https://ngrok.com) for quick testing: `ngrok http 3000`.
 
 ## Tech Stack
